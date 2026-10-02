@@ -764,8 +764,11 @@ const VisPlayground: React.FC<VisPlaygroundProps> = ({
         }
 
         const updateHeight = () => {
-            if (fontListRef.current) {
-                setFontListHeight(fontListRef.current.clientHeight);
+            const el = fontListRef.current;
+            if (el) {
+                // Guarded: the picker list resizes only when the font set or the panel width
+                // changes, but the observer also fires for ancestors moving underneath it.
+                setFontListHeight(current => (current === el.clientHeight ? current : el.clientHeight));
             }
         };
 
@@ -1203,6 +1206,10 @@ const VisPlayground: React.FC<VisPlaygroundProps> = ({
                                 songTitle={previewPlaceholder.title}
                                 showText
                                 staticMode={staticMode}
+                                // The preview pause only froze the preview clock, so every pixi ticker
+                                // and canvas rAF underneath kept running. Handing the flag down is what
+                                // makes the pause button actually stop the work.
+                                paused={isPreviewPaused}
                                 isPreviewMode
                                 visualizerOpacity={draftVisualizerOpacity}
                                 coverUrl={previewPlaceholder.coverUrl}

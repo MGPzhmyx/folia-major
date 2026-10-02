@@ -5,7 +5,62 @@ import type { MonetBackgroundImage, MonetBackgroundTuning, Theme } from '../../.
 // Builds and caches the static Monet poster background so the visualizer only recomputes when inputs change.
 const MONET_BACKGROUND_WIDTH = 1920;
 const MONET_BACKGROUND_HEIGHT = 1080;
+
+/** The resolution used while a blur is configured - see resolveMonetCanvasDimensions. */
+const BLURRED_BACKGROUND_WIDTH = 1280;
+const BLURRED_BACKGROUND_HEIGHT = 720;
+
+/**
+ * Canvas dimensions for one build.
+ *
+ * `toDataURL` encodes synchronously on the main thread: measured at ~26ms median for a
+ * 1920x1080 poster (headless Chromium), i.e. one to two dropped frames every time a debounced
+ * build lands (song change, slider settle). A blurred cover has no high-frequency content left
+ * to lose, so encoding at 720p (~2.25x fewer pixels, ~12ms) and letting the upscale + blur
+ * absorb the resampling is invisible; with blur off the cover stays sharp and keeps the full
+ * resolution. The overlay is gradients only, so nothing crisp rides along at either size.
+ */
+export const resolveMonetCanvasDimensions = (
+    tuning: Pick<MonetBackgroundTuning, 'backgroundBlurPx'>,
+): { width: number; height: number } => (
+    tuning.backgroundBlurPx > 0
+        ? { width: BLURRED_BACKGROUND_WIDTH, height: BLURRED_BACKGROUND_HEIGHT }
+        : { width: MONET_BACKGROUND_WIDTH, height: MONET_BACKGROUND_HEIGHT }
+);
+
+/**
+ * The `ctx.filter` sigma in bitmap pixels for a canvas of `width`. The sigma is applied before
+ * the upscale, so it must shrink with the bitmap or a 720p build would display ~1.5x blurrier
+ * than the configured value.
+ */
+export const resolveMonetBlurSigmaPx = (
+    tuning: Pick<MonetBackgroundTuning, 'backgroundBlurPx'>,
+    width: number,
+): number => (
+    clamp(tuning.backgroundBlurPx, 0, 60) * (width / MONET_BACKGROUND_WIDTH)
+);
 const monetBackgroundCache = new Map<string, Promise<string | null>>();
+
+/**
+ * LRU ceiling for the poster cache. Each entry resolves to a 1920x1080 JPEG data URL
+ * (hundreds of KB of resident string), and the key folds in cover URL, theme colours and
+ * every tuning slider value - so without a cap a long session (one entry per song, plus
+ * one per settled slider position) grows without bound. Only one background is ever on
+ * screen, so a handful of slots is plenty; the just-set key is never the one trimmed,
+ * because trimming runs before insertion, same as the rail's layout cache.
+ */
+const MONET_BACKGROUND_CACHE_LIMIT = 16;
+
+const trimOldestBackgroundEntry = () => {
+    if (monetBackgroundCache.size < MONET_BACKGROUND_CACHE_LIMIT) {
+        return;
+    }
+
+    const oldestKey = monetBackgroundCache.keys().next().value;
+    if (oldestKey) {
+        monetBackgroundCache.delete(oldestKey);
+    }
+};
 
 interface BuildMonetBackgroundOptions {
     coverUrl?: string | null;
@@ -325,8 +380,9 @@ export const buildMonetBackgroundDataUrl = async ({
 
     const image = await loadImage(sourceUrl);
     const canvas = document.createElement('canvas');
-    canvas.width = MONET_BACKGROUND_WIDTH;
-    canvas.height = MONET_BACKGROUND_HEIGHT;
+    const { width, height } = resolveMonetCanvasDimensions(tuning);
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext('2d');
     if (!context) {
         return null;
@@ -337,7 +393,7 @@ export const buildMonetBackgroundDataUrl = async ({
 
     context.save();
     if (checkCanvasFilterSupport()) {
-        context.filter = `blur(${clamp(tuning.backgroundBlurPx, 0, 60)}px)`;
+        context.filter = `blur(${resolveMonetBlurSigmaPx(tuning, canvas.width)}px)`;
     }
     drawCoverCropped(context, image, canvas.width, canvas.height);
     context.restore();
@@ -356,6 +412,7 @@ export const resolveMonetBackgroundDataUrl = (options: BuildMonetBackgroundOptio
     }
 
     const next = buildMonetBackgroundDataUrl(options).catch(() => null);
+    trimOldestBackgroundEntry();
     monetBackgroundCache.set(cacheKey, next);
     return next;
 };

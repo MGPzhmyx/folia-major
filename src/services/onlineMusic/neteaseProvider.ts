@@ -113,6 +113,24 @@ const extractCloudLyricText = (response: any): string => (
 
 const neteaseChorusRangesCache = new Map<string, Promise<Array<{ startTime: number; endTime: number }>>>();
 
+/**
+ * LRU ceiling. Entries are small but accumulate one per distinct song for the life of the page;
+ * 500 covers any realistic queue plus back-navigation while keeping residency bounded. Evicting
+ * an in-flight promise is safe: the original caller already awaits its own reference, and a later
+ * request for the same song simply refetches.
+ */
+const NETEASE_CHORUS_CACHE_LIMIT = 500;
+
+const trimOldestChorusEntry = () => {
+    if (neteaseChorusRangesCache.size < NETEASE_CHORUS_CACHE_LIMIT) {
+        return;
+    }
+    const oldestKey = neteaseChorusRangesCache.keys().next().value;
+    if (oldestKey) {
+        neteaseChorusRangesCache.delete(oldestKey);
+    }
+};
+
 const getNeteaseChorusRanges = async (songId: MediaId): Promise<Array<{ startTime: number; endTime: number }>> => {
     const parsedId = toNeteaseId(songId);
     const cacheKey = String(parsedId);
@@ -127,6 +145,7 @@ const getNeteaseChorusRanges = async (songId: MediaId): Promise<Array<{ startTim
             console.warn(`[NeteaseProvider] Failed to fetch chorus ranges for song ${songId}:`, error);
             return [];
         });
+    trimOldestChorusEntry();
     neteaseChorusRangesCache.set(cacheKey, request);
     return request;
 };

@@ -10,6 +10,30 @@ import { audioBands, audioPower, currentTime, lyricCurrentTime } from '../stores
 
 // src/hooks/usePlaybackVisualizerBridge.ts
 
+/** Shared empty spectrum for the idle branch - a fresh zero-length array per frame is waste. */
+const IDLE_SPECTRUM = new Uint8Array(0);
+
+// Bin width of the 44.1k/2048-FFT analyser, in Hz: band edges below are floored to whole bins.
+const HZ_PER_BIN = 21.5;
+
+/** Mean bin energy of [minHz, maxHz) on the byte spectrum, 0..255. */
+const bandEnergy = (spectrum: Uint8Array, minHz: number, maxHz: number): number => {
+    const start = Math.floor(minHz / HZ_PER_BIN);
+    const end = Math.floor(maxHz / HZ_PER_BIN);
+    let sum = 0;
+    for (let index = start; index <= end; index += 1) {
+        sum += spectrum[index];
+    }
+    const count = end - start + 1;
+    return count > 0 ? sum / count : 0;
+};
+
+/** Compresses a 0..255 band mean with an exponent; higher boost = tighter floor. */
+const boostEnergy = (value: number, boost = 2): number => {
+    const normalized = value / 255;
+    return Math.pow(normalized, boost) * 255;
+};
+
 type UsePlaybackVisualizerBridgeParams = {
 
     audioRef: MutableRefObject<HTMLAudioElement | null>;
@@ -74,6 +98,12 @@ export function usePlaybackVisualizerBridge({
 
     const currentLineIndexRef = useRef(-1);
 
+    // Filled in place every frame instead of reallocated: at 60fps a fresh
+    // Uint8Array(1024) per tick is ~60KB/s of pure GC churn. All consumers
+    // (AudioOverlay, OBS publisher) read spectrum via .get() within their own frame,
+    // so sharing one live buffer is safe; it is only replaced if fftSize ever changes.
+    const spectrumBufferRef = useRef<Uint8Array<ArrayBuffer>>(new Uint8Array(0));
+
     const updateLoop = useCallback(() => {
         // Normally the active deck; the outgoing one for as long as a blend holds the picture on
         // the track it is finishing, so that clock and picture never describe different songs.
@@ -86,38 +116,26 @@ export function usePlaybackVisualizerBridge({
 
         if (hasAudibleSignal && analyserRef.current) {
             const bufferLength = analyserRef.current.frequencyBinCount;
-            const dataArray = new Uint8Array(bufferLength);
+            let dataArray = spectrumBufferRef.current;
+            if (dataArray.length !== bufferLength) {
+                dataArray = new Uint8Array(bufferLength);
+                spectrumBufferRef.current = dataArray;
+            }
             analyserRef.current.getByteFrequencyData(dataArray);
             audioBands.spectrum?.set(dataArray);
 
-            const getEnergy = (minHz: number, maxHz: number): number => {
-                const start = Math.floor(minHz / 21.5);
-                const end = Math.floor(maxHz / 21.5);
-                let sum = 0;
-                for (let index = start; index <= end; index += 1) {
-                    sum += dataArray[index];
-                }
-                const count = end - start + 1;
-                return count > 0 ? sum / count : 0;
-            };
+            const bass = bandEnergy(dataArray, 20, 150);
+            const lowMid = bandEnergy(dataArray, 150, 400);
+            const mid = bandEnergy(dataArray, 400, 1200);
+            const vocal = bandEnergy(dataArray, 1000, 3500);
+            const treble = bandEnergy(dataArray, 3500, 12000);
 
-            const bass = getEnergy(20, 150);
-            const lowMid = getEnergy(150, 400);
-            const mid = getEnergy(400, 1200);
-            const vocal = getEnergy(1000, 3500);
-            const treble = getEnergy(3500, 12000);
-
-            const process = (value: number, boost = 2) => {
-                const normalized = value / 255;
-                return Math.pow(normalized, boost) * 255;
-            };
-
-            audioPower.set(process((bass + lowMid) / 2, 3));
-            audioBands.bass.set(process(bass, 1.8));
-            audioBands.lowMid.set(process(lowMid, 2));
-            audioBands.mid.set(process(mid, 2));
-            audioBands.vocal.set(process(vocal, 1.5));
-            audioBands.treble.set(process(treble, 2));
+            audioPower.set(boostEnergy((bass + lowMid) / 2, 3));
+            audioBands.bass.set(boostEnergy(bass, 1.8));
+            audioBands.lowMid.set(boostEnergy(lowMid, 2));
+            audioBands.mid.set(boostEnergy(mid, 2));
+            audioBands.vocal.set(boostEnergy(vocal, 1.5));
+            audioBands.treble.set(boostEnergy(treble, 2));
         } else {
             const time = Date.now() / 2000;
             const breath = (Math.sin(time) + 1) * 20;
@@ -127,7 +145,9 @@ export function usePlaybackVisualizerBridge({
             audioBands.mid.set(breath);
             audioBands.vocal.set(breath);
             audioBands.treble.set(breath);
-            audioBands.spectrum?.set(new Uint8Array(0));
+            // Shared empty instance: setting a fresh zero-length array per idle frame is
+            // pure allocation churn, and consumers only check length on this path.
+            audioBands.spectrum?.set(IDLE_SPECTRUM);
         }
 
         if (isActuallyPlaying && audioElement) {

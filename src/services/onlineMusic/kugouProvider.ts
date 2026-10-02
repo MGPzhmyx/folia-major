@@ -678,6 +678,24 @@ const getKugouUserId = (): string => String(readProviderSessionValue('kugou', 'u
 
 const kugouChorusRangesCache = new Map<string, Promise<ChorusRange[]>>();
 
+/**
+ * LRU ceiling. Entries are small but accumulate one per distinct song for the life of the page;
+ * 500 covers any realistic queue plus back-navigation while keeping residency bounded. Evicting
+ * an in-flight promise is safe: the original caller already awaits its own reference, and a later
+ * request for the same song simply refetches.
+ */
+const KUGOU_CHORUS_CACHE_LIMIT = 500;
+
+const trimOldestChorusEntry = () => {
+    if (kugouChorusRangesCache.size < KUGOU_CHORUS_CACHE_LIMIT) {
+        return;
+    }
+    const oldestKey = kugouChorusRangesCache.keys().next().value;
+    if (oldestKey) {
+        kugouChorusRangesCache.delete(oldestKey);
+    }
+};
+
 // Converts KuGou's millisecond climax payload into the shared second-based range model.
 const parseKugouChorusRanges = (response: unknown): ChorusRange[] => {
     const ranges = (response as any)?.data;
@@ -704,6 +722,7 @@ const getKugouChorusRanges = async (songId: MediaId): Promise<ChorusRange[]> => 
             console.warn(`[KugouProvider] Failed to fetch chorus ranges for song ${hash}:`, error);
             return [];
         });
+    trimOldestChorusEntry();
     kugouChorusRangesCache.set(hash, request);
     return request;
 };

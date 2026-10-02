@@ -1,5 +1,6 @@
 import { getFromCache, removeFromCache, saveToCache } from './db';
-import { createSafeObjectUrl, isBlob } from '../utils/blobGuards';
+import { isBlob } from '../utils/blobGuards';
+import { forgetCoverObjectUrl, mintCoverObjectUrl } from './coverObjectUrls';
 import {
     clearCoverAssets,
     getCoverAssetUsage,
@@ -46,24 +47,27 @@ export async function getCachedCoverUrl(cacheKey: string): Promise<string | null
     if (isBlob(stored)) {
         const descriptor = await writeCoverAsset(cacheKey, stored).catch(() => null);
         if (!descriptor) {
-            return createSafeObjectUrl(stored);
+            return mintCoverObjectUrl(cacheKey, stored);
         }
         await saveToCache(cacheKey, descriptor);
-        return createSafeObjectUrl(stored);
+        return mintCoverObjectUrl(cacheKey, stored);
     }
 
     if (stored !== null && !isStoredCoverDescriptor(stored)) {
         await removeFromCache(cacheKey);
         await removeCoverAsset(cacheKey);
+        // Bytes are gone: the memo must not keep answering this key with a URL over deleted data.
+        forgetCoverObjectUrl(cacheKey);
         return null;
     }
 
     const cachedCover = await readCoverAsset(cacheKey, isStoredCoverDescriptor(stored) ? stored.mimeType : undefined);
     if (!cachedCover) {
         if (stored) await removeFromCache(cacheKey);
+        forgetCoverObjectUrl(cacheKey);
         return null;
     }
-    return createSafeObjectUrl(cachedCover);
+    return mintCoverObjectUrl(cacheKey, cachedCover);
 }
 
 /**
@@ -91,7 +95,10 @@ export async function loadCachedOrFetchCover(cacheKey: string, coverUrl?: string
         const coverBlob = await fetchCoverBlob(coverUrl);
         const descriptor = await writeCoverAsset(cacheKey, coverBlob).catch(() => null);
         if (descriptor) await saveToCache(cacheKey, descriptor);
-        return createSafeObjectUrl(coverBlob) || coverUrl;
+        // Fresh bytes under this key: drop any memo (covers the case where a stale URL survived
+        // an earlier eviction) so the mint below cannot serve the previous blob.
+        forgetCoverObjectUrl(cacheKey);
+        return mintCoverObjectUrl(cacheKey, coverBlob) || coverUrl;
     } catch (error) {
         console.warn('Failed to cache cover:', error);
         return coverUrl;
@@ -99,6 +106,8 @@ export async function loadCachedOrFetchCover(cacheKey: string, coverUrl?: string
 }
 
 export async function saveCoverBlob(cacheKey: string, coverBlob: Blob): Promise<void> {
+    // Bytes under this key are about to change; a memoised URL points at the old blob.
+    forgetCoverObjectUrl(cacheKey);
     const descriptor = await writeCoverAsset(cacheKey, coverBlob).catch(() => null);
     if (descriptor) {
         await saveToCache(cacheKey, descriptor);
@@ -123,6 +132,7 @@ export async function cacheLocalSongOnlineCover(songId: string, coverUrl: string
 }
 
 export async function removeCachedCover(cacheKey: string): Promise<void> {
+    forgetCoverObjectUrl(cacheKey);
     await Promise.all([removeFromCache(cacheKey), removeCoverAsset(cacheKey)]);
 }
 

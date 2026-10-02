@@ -18,8 +18,39 @@ export const extractCloudLyricText = (response: any): string => {
     return '';
 };
 
+/**
+ * The index of the line that covers `time`, or -1 when none does.
+ *
+ * Runs on every frame of playback from two hot paths (the visualizer bridge and the timeline
+ * modal), so the common case must not be a scan. Lyric lines are sorted by startTime by the
+ * parsers (see utils/lyrics/parserCore.ts), so the candidate is found by binary search over the
+ * line that starts last but not after `time`.
+ *
+ * Overlapping lines are the reason this is not a plain binary search. Translated and romanised
+ * tracks put two lines on the same window, and the backwards walk is what makes the LAST one win -
+ * the same answer the linear version gave. It runs only until it leaves the lines that actually
+ * start at or before `time`, which for non-overlapping lyrics is a single comparison.
+ *
+ * PRECONDITION: `lines` is ordered by ascending startTime. Every producer sorts (parserCore.ts,
+ * foliaLyricDocument.ts) and all eleven callers read parser output, so this holds. An unsorted
+ * list would now give a wrong answer instead of a slow one - that is the trade the binary search
+ * makes, and it is cheaper than re-sorting or re-checking on a per-frame path.
+ */
 export const findLatestActiveLineIndex = (lines: LyricData['lines'], time: number) => {
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
+    // Upper bound: first line whose startTime is strictly greater than `time`.
+    let low = 0;
+    let high = lines.length;
+    while (low < high) {
+        const middle = (low + high) >>> 1;
+        const line = lines[middle];
+        if (line && line.startTime > time) {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+
+    for (let index = low - 1; index >= 0; index -= 1) {
         const line = lines[index];
         if (!line || time < line.startTime) {
             continue;
@@ -27,6 +58,9 @@ export const findLatestActiveLineIndex = (lines: LyricData['lines'], time: numbe
         if (time <= (line.renderHints?.renderEndTime ?? line.endTime)) {
             return index;
         }
+        // Every earlier line also starts at or before `time`, so the only reason to keep walking
+        // is overlap. A line that has already ended cannot be resurrected by an earlier one, unless
+        // that earlier one is itself still running - which is exactly the next candidate.
     }
     return -1;
 };

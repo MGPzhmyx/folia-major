@@ -40,6 +40,11 @@ import {
 import { loadPixi } from '../loadPixi';
 import { sonnetDebugState } from './sonnetDebug';
 import { resolveSonnetSegmentCameraFocus } from './sonnetCameraTracking';
+import {
+    requiresSonnetCanvasResize,
+    requiresSonnetOverlayRedraw,
+    requiresSonnetSceneRebuild,
+} from './sonnetRuntimeTuning';
 
 // src/components/visualizer/sonnet/createSonnetPixiRuntime.ts
 // Owns Pixi lifecycle and mutates bounded scene views directly from absolute playback time.
@@ -74,6 +79,8 @@ export const SONNET_SONG_SWAP_MS = 560;
  * most of the way opaque, early enough to leave headroom before the swap at the halfway point.
  */
 const SONNET_SWAP_STAGE_PROGRESS = 0.35;
+/** 场景缓存重建的防抖窗口：拖动滑条时只认最后一次（与 lumiere 的 REBUILD_DEBOUNCE_MS 同量级）。 */
+const SONNET_REBUILD_DEBOUNCE_MS = 220;
 
 interface SonnetIconTextures {
     textures: Map<string, import('pixi.js').Texture>;
@@ -127,6 +134,9 @@ export class SonnetPixiRuntime {
     } | null = null;
     private swapCover: import('pixi.js').Graphics | null = null;
     private resizeObserver: ResizeObserver | null = null;
+    /** 场景缓存要重建的标记；由 setTuning 防抖置位，在下一帧的开头消费。 */
+    private rebuildDue = false;
+    private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
     private lastWidth = 0;
     private lastHeight = 0;
 
@@ -697,6 +707,13 @@ export class SonnetPixiRuntime {
 
     private renderFrame = () => {
         if (this.destroyed) return;
+        if (this.rebuildDue) {
+            // The staged scene was built under the old tuning, so it is abandoned with the rest;
+            // the swap cover is already up, and the rebuild happens on the next paragraph lookup.
+            this.rebuildDue = false;
+            if (this.songSwap) this.songSwap.staged = null;
+            this.clearScenes();
+        }
         // Advanced before the paragraph lookup so a commit lands on this frame's scene selection
         // instead of leaving one frame of the outgoing program on the incoming one.
         this.advanceSongSwap();
@@ -1011,6 +1028,46 @@ export class SonnetPixiRuntime {
         return typeof value === 'number' && Number.isFinite(value) ? value : 1;
     }
 
+    /**
+     * 就地应用 tuning：每帧现读的字段直接改，画框立刻重画，烘焙进场景的字段防抖重建。
+     * 整份 tuning 曾经进 rebuildKey，于是每拖动一次滑条就销毁并重建一次 WebGL 上下文
+     * （lumiere / tempera 早已改成这条就地路径）。
+     */
+    setTuning(tuning: SonnetTuning) {
+        if (this.destroyed || tuning === this.options.tuning) return;
+        const previousTuning = this.options.tuning;
+        this.options.tuning = tuning;
+        if (requiresSonnetCanvasResize(previousTuning, tuning)) {
+            // 与 resizeToHost 同一套分辨率档位计算；宽度没变时它会早退，所以直接推一次。
+            this.app.renderer.resize(
+                Math.max(this.options.host.clientWidth, 320),
+                Math.max(this.options.host.clientHeight, 240),
+                snapResolutionToTexturePool(
+                    Math.max(this.options.host.clientWidth, 320),
+                    Math.max(this.options.host.clientHeight, 240),
+                    tuning.textureResolution,
+                ),
+            );
+        }
+        if (requiresSonnetOverlayRedraw(previousTuning, tuning) && this.lastWidth > 0 && this.lastHeight > 0) {
+            this.drawCredits(this.lastWidth, this.lastHeight);
+            this.drawOverlay(this.lastWidth, this.lastHeight);
+        }
+        if (requiresSonnetSceneRebuild(previousTuning, tuning)) this.scheduleRebuild();
+        else if (this.options.paused) this.renderOnce();
+    }
+
+    /** 场景重建是重活；拖动滑条时只认最后一次，防抖比每次都付重建便宜得多。 */
+    private scheduleRebuild() {
+        if (this.rebuildTimer !== null) clearTimeout(this.rebuildTimer);
+        this.rebuildTimer = setTimeout(() => {
+            this.rebuildTimer = null;
+            if (this.destroyed) return;
+            this.rebuildDue = true;
+            if (this.options.paused) this.renderOnce();
+        }, SONNET_REBUILD_DEBOUNCE_MS);
+    }
+
     /** Hot-swaps the modulation map every time a mod slider moves, without recreating the Pixi context. */
     setModulation(modulation: Record<string, number>) {
         if (this.destroyed) return;
@@ -1039,10 +1096,13 @@ export class SonnetPixiRuntime {
         this.settleSongSwap();
         this.resizeObserver?.disconnect();
         this.resizeObserver = null;
+        if (this.rebuildTimer !== null) clearTimeout(this.rebuildTimer);
+        this.rebuildTimer = null;
         this.app.stop();
         this.app.ticker.remove(this.renderFrame);
         this.clearScenes();
         destroySonnetContainerChildren(this.creditsContainer);
+        destroySonnetContainerChildren(this.overlayContainer);
         this.iconTextures.clear();
         this.releaseIconUrls(this.iconUrls);
         this.app.destroy({ removeView: true }, { children: true, texture: true });

@@ -50,9 +50,12 @@ export function SidePanelList<T>({
     useEffect(() => {
         if (isOpen && listContainerRef.current) {
             const el = listContainerRef.current;
-            setListHeight(el.clientHeight);
+            setListHeight(current => (current === el.clientHeight ? current : el.clientHeight));
+            // Guarded: the observer also fires when a sibling resizes or a scrollbar appears, and
+            // clientHeight is unchanged in those cases. Reading layout in the callback is the
+            // forcing function, so it costs a reflow whether or not the state write survives.
             const observer = new ResizeObserver(() => {
-                setListHeight(el.clientHeight);
+                setListHeight(current => (current === el.clientHeight ? current : el.clientHeight));
             });
             observer.observe(el);
             return () => observer.disconnect();

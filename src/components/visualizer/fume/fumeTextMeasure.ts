@@ -180,6 +180,13 @@ export const buildFontSpec = (
 };
 
 let segmentMeasureCanvas: HTMLCanvasElement | null = null;
+
+/**
+ * LRU ceiling: keys fold the full line text into the key, so an unbounded map grows with every
+ * distinct line the listener plays (fontSpec x text) - tens of MB over a long session. Offsets
+ * re-measure cheaply, so a generous 1000 keeps a whole album hot while still bounding residency.
+ */
+const SEGMENT_MEASURE_CACHE_LIMIT = 1000;
 const segmentMeasureCache = new Map<string, number[]>();
 
 const measureSegmentGlyphOffsets = (
@@ -212,6 +219,13 @@ const measureSegmentGlyphOffsets = (
         offsets[index] = context.measureText(graphemes.slice(0, index).join('')).width;
     }
 
+    // Trim before insert so the key just added is never the one evicted (same as the rail cache).
+    if (segmentMeasureCache.size >= SEGMENT_MEASURE_CACHE_LIMIT) {
+        const oldestKey = segmentMeasureCache.keys().next().value;
+        if (oldestKey) {
+            segmentMeasureCache.delete(oldestKey);
+        }
+    }
     segmentMeasureCache.set(cacheKey, offsets);
     return offsets;
 };

@@ -1,8 +1,10 @@
 import React from 'react';
 import FloatingPlayerControls from '../../FloatingPlayerControls';
 import SearchWorkspace from '../search/SearchWorkspace';
-import DevDebugOverlay from '../../DevDebugOverlay';
-import MemoryMonitorWindow from '../../debug/MemoryMonitorWindow';
+// Both are opt-in debug surfaces (never shown in a normal session), but sonnetDebug pulls in
+// the sonnet variant tables and pretext's layout tables - keep them out of the boot chain.
+const DevDebugOverlay = React.lazy(() => import('../../DevDebugOverlay'));
+const MemoryMonitorWindow = React.lazy(() => import('../../debug/MemoryMonitorWindow'));
 import NowPlayingToast from './NowPlayingToast';
 import type { AppOverlaysModel } from './buildAppOverlaysModel';
 import { countRender } from '../../../dev/renderCount';
@@ -28,9 +30,17 @@ const AppOverlays: React.FC<AppOverlaysProps> = ({ model }) => {
         <>
             {searchOverlay && <SearchWorkspace {...searchOverlay} />}
 
-            {debugOverlay && <DevDebugOverlay {...debugOverlay} />}
+            {debugOverlay && (
+                <React.Suspense fallback={null}>
+                    <DevDebugOverlay {...debugOverlay} />
+                </React.Suspense>
+            )}
 
-            {memoryMonitor && <MemoryMonitorWindow {...memoryMonitor} />}
+            {memoryMonitor && (
+                <React.Suspense fallback={null}>
+                    <MemoryMonitorWindow {...memoryMonitor} />
+                </React.Suspense>
+            )}
 
             {floatingControls
                 && (floatingControls.currentView !== 'lattice' || !isCurrentSongPosterVisible)

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type React from 'react';
 import { PlayerState, type ActiveLocalLyricsSource, type LyricData, type PlaybackContext, type ReplayGainMode, type SongResult } from '../types';
 import { createCoverUrlResolver } from '../components/app/playback/createCoverUrlResolver';
+import { retireCoverUrl, sweepCoverUrls } from '../services/coverObjectUrls';
 
 /** The now-playing picture, frozen for as long as a transition is running. */
 export interface TransitionDisplay {
@@ -104,7 +105,18 @@ export const usePlaybackStore = create<PlaybackStoreState>((set, get) => ({
     // pipeline (createLyricsSetter), so functional updates here never re-transform.
     setLyricsState: (next) => set({ lyrics: resolve(next, get().lyrics) }),
     setActiveLocalLyricsSource: (next) => set({ activeLocalLyricsSource: resolve(next, get().activeLocalLyricsSource) }),
-    setCachedCoverUrl: (next) => set({ cachedCoverUrl: resolve(next, get().cachedCoverUrl) }),
+    setCachedCoverUrl: (next) => {
+        const previous = get().cachedCoverUrl;
+        const resolved = resolve(next, previous);
+        if (resolved !== previous) {
+            // Parked rather than revoked: the replaced blob URL may be the frozen cover a blend
+            // cancel hands back (see services/coverObjectUrls.ts). The sweep below revokes it
+            // once neither the store nor transitionDisplay names it any more.
+            retireCoverUrl(previous);
+        }
+        set({ cachedCoverUrl: resolved });
+        sweepCoverUrls([get().cachedCoverUrl, get().transitionDisplay?.coverUrl]);
+    },
     setDuration: (next) => set({ duration: resolve(next, get().duration) }),
     setPlayerState: (next) => set({ playerState: resolve(next, get().playerState) }),
     setCurrentLineIndex: (next) => set({ currentLineIndex: resolve(next, get().currentLineIndex) }),
@@ -113,7 +125,11 @@ export const usePlaybackStore = create<PlaybackStoreState>((set, get) => ({
     setIsFmMode: (next) => set({ isFmMode: resolve(next, get().isFmMode) }),
     setReplayGainMode: (next) => set({ replayGainMode: resolve(next, get().replayGainMode) }),
     setLyricTimelineOffsetMs: (next) => set({ lyricTimelineOffsetMs: resolve(next, get().lyricTimelineOffsetMs) }),
-    setTransitionDisplay: (next) => set({ transitionDisplay: resolve(next, get().transitionDisplay) }),
+    setTransitionDisplay: (next) => {
+        set({ transitionDisplay: resolve(next, get().transitionDisplay) });
+        // A cleared transition stops naming the frozen cover, so a parked URL it held can go.
+        sweepCoverUrls([get().cachedCoverUrl, get().transitionDisplay?.coverUrl]);
+    },
 }));
 
 // ---- module-level setters ----

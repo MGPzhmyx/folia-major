@@ -3,6 +3,7 @@ import { motion, AnimatePresence, MotionValue, useMotionValueEvent } from 'frame
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { LyricData, Theme } from '../../types';
+import { findLatestActiveLineIndex } from '../../utils/appPlaybackHelpers';
 
 interface LyricsTimelineModalProps {
     isOpen: boolean;
@@ -61,7 +62,9 @@ const LyricsTimelineModal: React.FC<LyricsTimelineModalProps> = ({
     // Track active line
     useMotionValueEvent(currentTime, "change", (latest) => {
         if (!lyrics || !lyrics.lines) return;
-        const index = lyrics.lines.findIndex(line => latest >= line.startTime && latest <= line.endTime);
+        // Shares the bridge's binary search instead of a linear findIndex: this modal is mounted
+        // permanently behind the player controls, so the scan ran on every frame even while closed.
+        const index = findLatestActiveLineIndex(lyrics.lines, latest);
         if (index !== -1 && index !== activeLineIndex) {
             setActiveLineIndex(index);
         }

@@ -1285,6 +1285,7 @@ const VisualizerCadenza: React.FC<VisualizerProps> = (props) => {
         hideTranslationSubtitle = false,
         showSubtitleTranslation = true,
         subtitleContentMode,
+        paused = false,
     } = props;
     const { t } = useTranslation();
     const [viewport, setViewport] = useState({ width: 0, height: 0 });
@@ -1455,7 +1456,7 @@ const VisualizerCadenza: React.FC<VisualizerProps> = (props) => {
                 lineLayer.style.transform = 'scale(1)';
                 lineLayer.style.perspective = '1000px';
                 clearOverlayWordNodes(overlayNodesRef.current);
-                frameId = window.requestAnimationFrame(draw);
+                if (!paused) frameId = window.requestAnimationFrame(draw);
                 return;
             }
 
@@ -1656,6 +1657,13 @@ const VisualizerCadenza: React.FC<VisualizerProps> = (props) => {
                 }
             });
 
+            // Paused paints the settled frame and stops: every word's placement and shadow are
+            // already written, so redrawing the whole DOM overlay at 60fps is pure burn. The
+            // paused dependency below restarts the loop.
+            if (paused) {
+                frameId = 0;
+                return;
+            }
             frameId = window.requestAnimationFrame(draw);
         };
 
@@ -1676,6 +1684,7 @@ const VisualizerCadenza: React.FC<VisualizerProps> = (props) => {
         tuning.motionAmount,
         viewport.height,
         viewport.width,
+        paused,
     ]);
 
     return (

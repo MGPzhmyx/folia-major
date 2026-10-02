@@ -38,6 +38,12 @@ const inFlight = new Set<string>();
 const skipped = new Map<string, string>();
 /** Same order of magnitude as the prefetch cache; each entry is a couple of hundred bytes. */
 const MAX_PROFILES = 200;
+/**
+ * Same cap as `profiles`. The map only suppresses repeat log lines, so losing an old entry
+ * costs at most one duplicate reason per song; unbounded it would still grow one string per
+ * track the listener passed over for the life of the page.
+ */
+const MAX_SKIPPED = 200;
 
 /** One at a time: decoding a track allocates tens of megabytes, and two at once is the spike. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -307,6 +313,13 @@ export const ensureTrackProfile = async (request: ProfileRequest): Promise<void>
                 // completely inert - every transition falling through to the plain crossfade -
                 // and print nothing at all to say why.
                 if (result.skipped && skipped.get(songKey) !== result.skipped) {
+                    // Trim before insert so a burst of skips cannot grow the map without bound.
+                    if (skipped.size >= MAX_SKIPPED) {
+                        const oldestKey = skipped.keys().next().value;
+                        if (oldestKey) {
+                            skipped.delete(oldestKey);
+                        }
+                    }
                     skipped.set(songKey, result.skipped);
                     console.log(`[Automix] not analysing "${request.song.name}": ${result.skipped}`);
                 }

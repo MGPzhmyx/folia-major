@@ -893,6 +893,11 @@ const VisualizerCladdagh: React.FC<VisualizerSharedProps> = (props) => {
                 lineEl.style.filter = 'none';
             }
 
+            // Paused paints the settled gradient and stops; the paused dependency restarts the loop.
+            if (paused) {
+                frameId = 0;
+                return;
+            }
             frameId = requestAnimationFrame(updateColors);
         };
 
@@ -918,7 +923,14 @@ const VisualizerCladdagh: React.FC<VisualizerSharedProps> = (props) => {
             if (entry) {
                 const { width, height } = entry.contentRect;
                 if (width > 0 && height > 0) {
-                    setDimensions({ width, height });
+                    // Guarded on the pair: the callback can fire for a resize that moved something
+                    // else in the subtree, and every one of those writes is a fresh object, so an
+                    // identity check on the value alone would never match.
+                    setDimensions(current => (
+                        current.width === width && current.height === height
+                            ? current
+                            : { width, height }
+                    ));
                 }
             }
         });

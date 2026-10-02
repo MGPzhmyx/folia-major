@@ -71,6 +71,10 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         album: songAlbum,
     };
     const [runtimeFailed, setRuntimeFailed] = useState(false);
+    // The tuning is read once per render and pushed into the live runtime, so a slider move never
+    // re-initialises WebGL. Read again inside create(), which can run long after this render.
+    const sonnetTuningRef = useRef(sonnetTuning);
+    sonnetTuningRef.current = sonnetTuning;
 
     // The song actually on screen. It lags the props across a switch so the scene is never
     // rebuilt against lyrics that have not arrived yet - see songHandover.ts.
@@ -124,8 +128,9 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         hostRef,
         label: 'Sonnet',
         // Only inputs that genuinely need a new WebGL context. The song is handed to the live
-        // runtime instead - see SonnetPixiRuntime.swapSong.
-        rebuildKey: [currentTime, lyricsFontScale, sonnetTuning, staticMode, transparentBackground],
+        // runtime instead - see SonnetPixiRuntime.swapSong, and the tuning likewise - see
+        // SonnetPixiRuntime.setTuning: a rebuild per pointer move re-initialises WebGL.
+        rebuildKey: [currentTime, lyricsFontScale, staticMode, transparentBackground],
         song: songContext,
         create: async (host, song, signal) => {
             const { SonnetPixiRuntime } = await import('./createSonnetPixiRuntime');
@@ -150,6 +155,8 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
                 modulation,
             });
             runtime.setSongMetadata(latestSongMetadataRef.current);
+            // The tuning may have moved on while Pixi was importing or initializing.
+            runtime.setTuning(sonnetTuningRef.current);
             // The pause state may have changed while Pixi was importing or initializing.
             runtime.setPaused(pausedRef.current);
             return runtime;
@@ -158,6 +165,10 @@ const VisualizerSonnet: React.FC<VisualizerSharedProps> = (props) => {
         destroy: runtime => runtime.destroy(),
         onFailedChange: setRuntimeFailed,
     });
+
+    useEffect(() => {
+        runtimeRef.current?.setTuning(sonnetTuning);
+    }, [sonnetTuning, runtimeRef]);
 
     useEffect(() => {
         runtimeRef.current?.setSongMetadata(latestSongMetadataRef.current);

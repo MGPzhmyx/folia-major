@@ -9,6 +9,7 @@ import { addSongsToLocalPlaylist, buildCanonicalLocalSongIdIndex, createLocalPla
 import { applyLocalLibraryEntityDisplay, buildLocalQueue, buildNavidromeQueue, buildUnifiedLocalSong, buildUnifiedNavidromeSong, resolveLocalSongMetadata } from '../services/playbackAdapters';
 import { getPrefetchedData } from '../services/prefetchService';
 import { retireBlobUrl } from '../services/playbackBlobUrls';
+import { retireCoverUrl, sweepCoverUrls } from '../services/coverObjectUrls';
 import type { ThemeCacheSongKey } from '../services/themeCache';
 import { hasRenderableLyrics } from '../utils/appPlaybackHelpers';
 import {
@@ -139,24 +140,31 @@ export function useLibraryPlaybackController({
         }
     }, [resolveLocalSongRecord]);
 
+    // Parked rather than revoked outright: the cover that replaces this one arrives
+    // asynchronously (the online path fetches before it sets), so the store can still name this
+    // URL for a moment, and a blend may hold it frozen in transitionDisplay. The sweep revokes it
+    // once neither names it - see services/coverObjectUrls.ts.
     const revokeManagedCachedCoverObjectUrl = useCallback(() => {
-        if (managedCachedCoverObjectUrlRef.current) {
-            URL.revokeObjectURL(managedCachedCoverObjectUrlRef.current);
-            managedCachedCoverObjectUrlRef.current = null;
-        }
+        const managed = managedCachedCoverObjectUrlRef.current;
+        if (!managed) return;
+        managedCachedCoverObjectUrlRef.current = null;
+        retireCoverUrl(managed);
+        const state = usePlaybackStore.getState();
+        sweepCoverUrls([state.cachedCoverUrl, state.transitionDisplay?.coverUrl]);
     }, []);
 
     const setManagedCachedCoverUrl = useCallback((nextUrl: string | null) => {
         const previousUrl = managedCachedCoverObjectUrlRef.current;
         if (previousUrl && previousUrl !== nextUrl) {
-            URL.revokeObjectURL(previousUrl);
             managedCachedCoverObjectUrlRef.current = null;
+            retireCoverUrl(previousUrl);
         }
 
         if (isBlobObjectUrl(nextUrl)) {
             managedCachedCoverObjectUrlRef.current = nextUrl;
         }
 
+        // The store setter parks its own previous value and sweeps, so nothing is left behind.
         setCachedCoverUrl(nextUrl);
     }, [setCachedCoverUrl]);
 

@@ -1,7 +1,6 @@
 import { PINYIN_BY_PHRASE } from 'virtual:folia-command-pinyin';
 import en from '../../../i18n/locales/en';
 import zhCN from '../../../i18n/locales/zh-CN';
-import ind from '../../../i18n/locales/in';
 import type { CommandPaletteCommand } from '../types';
 import { normalizeSearchText, splitWords } from './normalize';
 
@@ -21,8 +20,40 @@ type LocaleCommandText = Record<string, { title?: string; description?: string }
 const LOCALE_COMMAND_TEXT: Record<string, LocaleCommandText> = {
     en: ((en as any).commandPalette?.commands ?? {}) as LocaleCommandText,
     'zh-CN': ((zhCN as any).commandPalette?.commands ?? {}) as LocaleCommandText,
-    in: ((ind as any).commandPalette?.commands ?? {}) as LocaleCommandText,
+    // 'in' (Indonesian) is deliberately absent: bundling it eagerly costs every other language
+    // a whole locale file in the startup chunk. ensureIndonesianCommandText() pulls it in the
+    // first time an index is actually asked for in Indonesian - a non-Indonesian session never
+    // downloads it, and an Indonesian one searches via the en/zh corpus until the chunk lands.
 };
+
+let indonesianTextPromise: Promise<void> | null = null;
+
+/** Loads the Indonesian command text once; subsequent calls share the same in-flight import. */
+const ensureIndonesianCommandText = (): Promise<void> => {
+    if (!indonesianTextPromise) {
+        indonesianTextPromise = import('../../../i18n/locales/in').then((mod) => {
+            LOCALE_COMMAND_TEXT.in = ((mod.default as any).commandPalette?.commands ?? {}) as LocaleCommandText;
+            // Entries and indexes built while the text was missing answer without it; drop the
+            // pending-keyed caches so the next lookup rebuilds against the real translations.
+            entryCacheByLocale.delete(LOCALE_COMMAND_TEXT_CACHE_KEY);
+        }).catch(() => {
+            // A failed load stays failed for this session: searches keep working on the
+            // en/zh corpus instead of retrying the import on every keystroke.
+            indonesianTextPromise = null;
+        });
+    }
+    return indonesianTextPromise;
+};
+
+/**
+ * Cache key for a locale, distinct while the Indonesian text is still in flight: callers pass
+ * the raw locale string, so a pending build must not be served from (or poison) the cache slot
+ * the filled build will use.
+ */
+const LOCALE_COMMAND_TEXT_CACHE_KEY = 'in:pending';
+const localeCacheKey = (locale: string): string => (
+    locale === 'in' && !LOCALE_COMMAND_TEXT.in ? LOCALE_COMMAND_TEXT_CACHE_KEY : locale
+);
 
 const CJK = /[一-鿿㐀-䶿]/;
 
@@ -202,10 +233,13 @@ const buildEntry = (command: CommandPaletteCommand, locale: string): CommandSear
 const entryCacheByLocale = new Map<string, WeakMap<CommandPaletteCommand, CommandSearchEntry>>();
 
 const getEntry = (command: CommandPaletteCommand, locale: string): CommandSearchEntry => {
-    let byCommand = entryCacheByLocale.get(locale);
+    // Keyed through localeCacheKey: entries built before the Indonesian text landed must not be
+    // served after it arrives (see ensureIndonesianCommandText).
+    const cacheKey = localeCacheKey(locale);
+    let byCommand = entryCacheByLocale.get(cacheKey);
     if (!byCommand) {
         byCommand = new WeakMap();
-        entryCacheByLocale.set(locale, byCommand);
+        entryCacheByLocale.set(cacheKey, byCommand);
     }
 
     const cached = byCommand.get(command);
@@ -253,19 +287,26 @@ export const getCommandSearchIndex = (
     commands: CommandPaletteCommand[],
     locale = 'en',
 ): CommandSearchIndex => {
+    // First Indonesian lookup kicks off the locale chunk; until it lands the index is built
+    // from the en/zh corpus and cached under the pending key, so keystrokes stay synchronous.
+    if (locale === 'in' && !LOCALE_COMMAND_TEXT.in) {
+        void ensureIndonesianCommandText();
+    }
+
     let byLocale = indexCache.get(commands);
     if (!byLocale) {
         byLocale = new Map();
         indexCache.set(commands, byLocale);
     }
 
-    const cached = byLocale.get(locale);
+    const cacheKey = localeCacheKey(locale);
+    const cached = byLocale.get(cacheKey);
     if (cached) {
         return cached;
     }
 
     const built = buildCommandSearchIndex(commands, locale);
-    byLocale.set(locale, built);
+    byLocale.set(cacheKey, built);
     return built;
 };
 

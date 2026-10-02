@@ -150,7 +150,10 @@ const VisualizerTempera: React.FC<VisualizerSharedProps> = (props) => {
         const placements = layerImagesRef.current;
         const injected = injectedAssetsRef.current;
         if (placements.length === 0) {
-            setImageBlobs(new Map());
+            // Keep the initial Map's identity when the pool is already empty: imageBlobs is part
+            // of rebuildKey, so a fresh empty Map here would throw away the Pixi runtime and
+            // re-init WebGL for a visualizer that has no layer images to place.
+            setImageBlobs(previous => (previous.size === 0 ? previous : new Map()));
             return undefined;
         }
         let active = true;

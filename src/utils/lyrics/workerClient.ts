@@ -19,6 +19,23 @@ export const toWorkerLyricProcessingOptions = (
     };
 };
 
+/**
+ * Settles every in-flight request as null and drops the worker so the next request builds a
+ * fresh one. Without this, a worker that fails to load (CSP, script error) or dies mid-parse
+ * leaves each pending Promise unresolved forever and workerCallbacks growing per call - the
+ * caller waits indefinitely instead of degrading. Mirrors analysisOffThread's decline path.
+ */
+const failPendingRequests = (reason: string) => {
+    console.warn('[LyricsWorker] failing in-flight requests:', reason);
+    lyricsWorker?.terminate();
+    lyricsWorker = null;
+    const pending = [...workerCallbacks.values()];
+    workerCallbacks.clear();
+    for (const settle of pending) {
+        settle(null);
+    }
+};
+
 export const initLyricsWorker = (): Worker => {
     if (!lyricsWorker) {
         // Need to use correct relative path or alias
@@ -26,6 +43,10 @@ export const initLyricsWorker = (): Worker => {
             new URL('../../workers/lyricsParser.worker.ts', import.meta.url),
             { type: 'module' }
         );
+        // The worker never posts a reply of its own on these, so without a handler every
+        // pending parse hangs and its callback stays in the map for the life of the page.
+        lyricsWorker.onerror = (event) => failPendingRequests(event.message || 'worker error');
+        lyricsWorker.onmessageerror = () => failPendingRequests('worker message deserialization failed');
         lyricsWorker.onmessage = (e) => {
             const { type, data, requestId, message } = e.data;
             const callback = workerCallbacks.get(requestId);
@@ -51,7 +72,16 @@ export const parseLyricsAsync = (
     romanization?: string
 ): Promise<LyricData | null> => {
     return new Promise((resolve) => {
-        const worker = initLyricsWorker();
+        let worker: Worker;
+        try {
+            worker = initLyricsWorker();
+        } catch (error) {
+            // Worker construction itself can fail (blocked by CSP, no Worker support). Resolve
+            // null to match the onerror contract callers rely on, instead of rejecting.
+            console.warn('[LyricsWorker] failed to start worker:', error);
+            resolve(null);
+            return;
+        }
         const requestId = `req_${++workerRequestId}`;
         workerCallbacks.set(requestId, resolve);
         worker.postMessage({

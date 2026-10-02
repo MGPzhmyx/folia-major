@@ -3,7 +3,11 @@ import { normalizeLyricMatchDurationMs } from './duration';
 import { createProviderSongMetadata } from '../songMetadata';
 
 import * as wanakana from 'wanakana';
-import * as OpenCC from 'opencc-js';
+// Subpath, not the package root: the root entry pulls opencc-js's full.js (all directions,
+// ~1.2MB of dictionaries) into the startup chunk, while this call only ever converts
+// t -> cn. The t2cn entry exposes the same Converter with byte-identical output for that
+// direction (parity-checked), which shaves ~1.1MB of source off the initial bundle.
+import * as OpenCC from 'opencc-js/t2cn';
 
 // src/utils/lyrics/matchScore.ts
 

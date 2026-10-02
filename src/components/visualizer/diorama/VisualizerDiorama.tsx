@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { DEFAULT_DIORAMA_TUNING, type Line } from '../../../types';
@@ -97,6 +97,23 @@ const INSTRUMENTAL_COMMIT_SECONDS = 2;
 // advances (e.g. the new song is paused / fails to start). Far longer than a normal lyric load.
 const READY_GRACE_MS = 8000;
 
+/**
+ * Demand mode paints nothing on its own, so the settled frame has to be asked for once whenever a
+ * paused input moves. Mounted inside the Canvas: it re-renders when the scene is committed or the
+ * viewport resizes, and asks for exactly one more frame.
+ */
+const DioramaFrameInvalidator: React.FC<{ paused: boolean }> = ({ paused }) => {
+    const invalidate = useThree((state) => state.invalidate);
+    const scene = useThree((state) => state.scene);
+    const size = useThree((state) => state.size);
+
+    useEffect(() => {
+        invalidate();
+    }, [invalidate, paused, scene, size.width, size.height]);
+
+    return null;
+};
+
 const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
     const {
         currentTime,
@@ -117,6 +134,7 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
         subtitleContentMode,
         seed,
         dioramaTuning,
+        paused = false,
     } = props;
     const { t } = useTranslation();
 
@@ -405,6 +423,11 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
                     dpr={[1, 2]}
                     gl={{ alpha: true, antialias: true }}
                     style={{ background: 'transparent' }}
+                    // Paused stops the frame loop instead of running three useFrame subscribers
+                    // (camera rig, scene, particle field) at 60fps against a frozen clock. Demand
+                    // mode paints nothing on its own, so the invalidate below repaints the settled
+                    // frame once on the way in; 'always' resumes on its own.
+                    frameloop={paused ? 'demand' : 'always'}
                 >
                     <CameraRig
                         currentTime={currentTime}
@@ -453,6 +476,7 @@ const VisualizerDiorama: React.FC<VisualizerDioramaProps> = (props) => {
                         keywordColoringEnabled={dioramaTuning?.keywordColoringEnabled
                             ?? DEFAULT_DIORAMA_TUNING.keywordColoringEnabled}
                     />
+                    <DioramaFrameInvalidator paused={paused} />
                 </Canvas>
             </div>
 

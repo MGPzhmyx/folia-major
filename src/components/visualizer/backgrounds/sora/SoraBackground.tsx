@@ -109,6 +109,8 @@ const SoraBackground: React.FC<SoraBackgroundProps> = ({ theme, isDaylight, paus
   const bgColor = isDaylight ? [1.0, 1.0, 1.0] : [0.0, 0.0, 0.0];
 
   const pausedRef = useRef(paused);
+  /** Cancels a pending deferred context release when StrictMode replays the effect. */
+  const releaseRef = useRef<(() => void) | null>(null);
   const particleColorRef = useRef(particleColor);
   const particleAccentColorRef = useRef(particleAccentColor);
   const bgColorRef = useRef(bgColor);
@@ -119,6 +121,9 @@ const SoraBackground: React.FC<SoraBackgroundProps> = ({ theme, isDaylight, paus
   bgColorRef.current = bgColor;
 
   useEffect(() => {
+    // A release scheduled by the previous run would fire against this run's context; drop it.
+    releaseRef.current?.();
+    releaseRef.current = null;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -175,6 +180,12 @@ const SoraBackground: React.FC<SoraBackgroundProps> = ({ theme, isDaylight, paus
       
       twgl.drawBufferInfo(gl, bufferInfo, gl.POINTS);
 
+      // Paused draws the frozen field once and stops: nothing in the starfield moves, so re-running
+      // clear+draw every frame is pure GPU burn. The effect below restarts the loop on resume.
+      if (pausedRef.current) {
+        animationRef.current = 0;
+        return;
+      }
       animationRef.current = requestAnimationFrame(render);
     };
 
@@ -183,12 +194,30 @@ const SoraBackground: React.FC<SoraBackgroundProps> = ({ theme, isDaylight, paus
     return () => {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
+        animationRef.current = 0;
       }
       gl.deleteProgram(programInfo.program);
       if (bufferInfo.attribs && bufferInfo.attribs.a_index && bufferInfo.attribs.a_index.buffer) {
           gl.deleteBuffer(bufferInfo.attribs.a_index.buffer);
       }
+      // twgl does not release the context: deleting the program/buffer leaves the WebGL
+      // context alive until the GC gets to the canvas. Switching visualizer modes remounts
+      // this background with a fresh canvas, so without an explicit loseContext the old
+      // contexts pile up against Chromium's ~16-context ceiling.
+      // The app renders under React.StrictMode, whose development double mount runs this cleanup
+      // and then re-runs the effect on the SAME canvas. A synchronous loseContext here would kill
+      // the context the replayed mount is about to use, so the release is deferred by a macrotask
+      // and cancelled if the effect comes back first.
+      const pendingRelease = window.setTimeout(() => {
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+      }, 0);
+      releaseRef.current = () => window.clearTimeout(pendingRelease);
     };
+  }, [paused]);
+
+  // A real unmount has no replay coming, so the deferred release must not be cancelled.
+  useEffect(() => () => {
+    releaseRef.current = null;
   }, []);
 
   return (

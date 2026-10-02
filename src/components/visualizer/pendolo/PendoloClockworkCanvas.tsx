@@ -817,6 +817,12 @@ const PendoloClockworkCanvas: React.FC<PendoloClockworkCanvasProps> = ({
 
             ctx.restore();
 
+            // Paused paints the settled frame and stops: the pose is frozen, so redrawing the whole
+            // clockwork at 60fps would be pure burn. The paused dependency restarts the loop.
+            if (p.paused) {
+                animationFrameId = 0;
+                return;
+            }
             animationFrameId = window.requestAnimationFrame(render);
         };
 
@@ -827,7 +833,7 @@ const PendoloClockworkCanvas: React.FC<PendoloClockworkCanvasProps> = ({
                 window.cancelAnimationFrame(animationFrameId);
             }
         };
-    }, [showGearDecor, showCenterGradient, showCover, audioBassMotionValue, escapementAngleMotionValue]);
+    }, [showGearDecor, showCenterGradient, showCover, audioBassMotionValue, escapementAngleMotionValue, paused]);
 
     if (showGearDecor === 'none' && !showCenterGradient && !showCover) {
         return null;
