@@ -115,7 +115,14 @@ test('steps lyric modes with the arrows and opens the full list from the name', 
     await lyricRow.getByRole('button', { name: '歌词样式', exact: true }).click();
     const list = page.getByRole('listbox', { name: '歌词样式' });
     await expect(list).toBeVisible();
-    await expect(list.getByRole('option')).toHaveCount(13);
+    // Derived from the built-in list rather than hard-coded: v0.7.12 added `lumiere` and upstream
+    // did not update this count, so the old literal 13 silently rotted into a real failure.
+    const expectedModeCount = await page.evaluate(async () => {
+        const modulePath = '/src/types/visualizerModes.ts';
+        const { BUILTIN_VISUALIZER_MODES } = await import(modulePath);
+        return (BUILTIN_VISUALIZER_MODES as readonly string[]).length;
+    });
+    await expect(list.getByRole('option')).toHaveCount(expectedModeCount);
     await expect(list.getByRole('option', { name: '静止' })).toBeVisible();
     await expect(page.getByText('更多设置', { exact: true })).toBeVisible();
 
